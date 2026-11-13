@@ -174,7 +174,9 @@ class Serv00LoginBot:
             logger.error(f"❌ 账号信息不完整: {name} (panel、username、password 三项必需)")
             return False, "账号信息不完整"
 
-        logger.info(f"🔐 开始处理账号: {name} (用户名: {username})")
+        print(f"::add-mask::{username}", flush=True)
+        masked_user = (username[:2] + "***" + username[-2:]) if len(username) > 4 else "***"
+        logger.info(f"🔐 开始处理账号: {name} (用户名: {masked_user})")
 
         url_candidates = self.build_candidate_urls(panel)
         logger.debug(f"候选登录页: {url_candidates}")
@@ -273,7 +275,7 @@ class Serv00LoginBot:
             return False
 
         usernames = [a.get('username') or a.get('user') or '' for a in accounts]
-        logger.info(f"📋 找到 {len(accounts)} 个账号需要处理, 用户名列表: {usernames}")
+        logger.info(f"📋 找到 {len(accounts)} 个账号需要处理")
 
         if not self.setup_driver():
             return False
