@@ -4,9 +4,6 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "0 0 */15 * *"  # 每三天运行一次
-  push:
-    branches:
-      - main
 
 jobs:
   login:
