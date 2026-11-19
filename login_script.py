@@ -170,8 +170,12 @@ class Serv00LoginBot:
         username = account_info.get('username') or account_info.get('user') or ''
         password = account_info.get('password') or account_info.get('pass') or ''
 
-        if not panel or not username or not password:
-            logger.error(f"❌ 账号信息不完整: {name} (panel、username、password 三项必需)")
+        if not panel:
+            panel = "panel.ct8.pl"
+            logger.info(f"ℹ️ {name} 未显式指定 panel，默认使用 panel.ct8.pl")
+
+        if not username or not password:
+            logger.error(f"❌ 账号信息不完整: {name} (username、password 为必需项)")
             return False, "账号信息不完整"
 
         print(f"::add-mask::{username}", flush=True)
@@ -262,11 +266,62 @@ class Serv00LoginBot:
         self.take_screenshot(f"error_all_candidates_{name}")
         return False, "无法找到合适的登录页面或登录失败"
 
+    @staticmethod
+    def _parse_accounts(raw: str):
+        if not raw:
+            return []
+        raw = raw.strip()
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            raw = "\n".join(lines).strip()
+
+        # 1. 尝试直接标准解析
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict):
+                return [data]
+        except Exception:
+            pass
+
+        # 2. 尝试按行解析每行一个 JSON 对象（NDJSON 模式）
+        accs = []
+        for line in raw.splitlines():
+            line = line.strip().rstrip(",")
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+                if isinstance(item, dict):
+                    accs.append(item)
+                elif isinstance(item, list):
+                    accs.extend(item)
+            except Exception:
+                pass
+        if accs:
+            return accs
+
+        # 3. 尝试首尾补全中括号后解析
+        try:
+            data = json.loads(f"[{raw.strip().rstrip(',')}]")
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+
+        # 4. 回退并抛出原始错误，便于记录日志
+        return json.loads(raw)
+
     def process_all_accounts(self):
         accounts_json = os.environ.get('ACCOUNTS_JSON', '[]')
         logger.info("📦 读取 ACCOUNTS_JSON（已屏蔽密码）")
         try:
-            accounts = json.loads(accounts_json)
+            accounts = self._parse_accounts(accounts_json)
         except json.JSONDecodeError as e:
             logger.error(f"❌ 账号JSON格式错误: {e}")
             return False
