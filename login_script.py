@@ -176,7 +176,7 @@ class Serv00LoginBot:
 
         if not username or not password:
             logger.error(f"❌ 账号信息不完整: {name} (username、password 为必需项)")
-            return False, "账号信息不完整"
+            return False, "账号信息不完整", "invalid"
 
         print(f"::add-mask::{username}", flush=True)
         masked_user = (username[:2] + "***" + username[-2:]) if len(username) > 4 else "***"
@@ -204,7 +204,7 @@ class Serv00LoginBot:
                     continue
                 if not self.safe_send_keys(username_field, username):
                     self.take_screenshot(f"error_username_input_{name}")
-                    return False, "用户名输入失败"
+                    return False, "用户名输入失败", "failed"
                 logger.info("✅ 用户名输入完成")
                 time.sleep(0.5)
 
@@ -213,10 +213,10 @@ class Serv00LoginBot:
                                  self.wait_for_element(By.ID, "password", timeout=4)
                 if not password_field:
                     self.take_screenshot(f"error_password_not_found_{name}")
-                    return False, "未找到密码输入框"
+                    return False, "未找到密码输入框", "failed"
                 if not self.safe_send_keys(password_field, password):
                     self.take_screenshot(f"error_password_input_{name}")
-                    return False, "密码输入失败"
+                    return False, "密码输入失败", "failed"
                 logger.info("✅ 密码输入完成")
                 time.sleep(0.5)
 
@@ -232,31 +232,61 @@ class Serv00LoginBot:
                     logger.info("🖱️ 点击登录按钮...")
                     if not self.safe_click(login_button):
                         self.take_screenshot(f"error_click_failed_{name}")
-                        return False, "登录按钮点击失败"
+                        return False, "登录按钮点击失败", "failed"
 
                 time.sleep(5)
                 current_url = self.driver.current_url or ''
-                page_title = (self.driver.title or '').lower()
-                page_source = (self.driver.page_source or '').lower()
+                page_source = self.driver.page_source or ''
+                page_source_lower = page_source.lower()
 
-                success_indicators = ['dashboard', 'panel', 'account', 'welcome', 'strona główna', 'logged', 'profile']
-                error_indicators = ['error', 'błąd', 'invalid', 'failed', 'unauthorized', 'forbidden']
+                # 提取页面上的错误/警告信息（DevilWEB 使用 .alert 类）
+                alert_texts = []
+                try:
+                    for el in self.driver.find_elements(By.CSS_SELECTOR, ".alert, .error, .alert-danger, .alert-error, span.error"):
+                        t = el.text.replace('×', '').strip()
+                        if t and t not in alert_texts:
+                            alert_texts.append(t)
+                except Exception:
+                    pass
 
-                if any(ind in current_url.lower() for ind in success_indicators) \
-                   or any(ind in page_title for ind in success_indicators) \
-                   or any(ind in page_source for ind in success_indicators):
+                alert_summary = " | ".join(alert_texts) if alert_texts else ""
+
+                # 1. 封号检测（TOS 封禁、Proxy 代理封禁、账号停用等）
+                ban_keywords = ['zablokowane', 'blocked', 'suspended', 'deactivated', 'wyłączone', 'nieaktywne', 'usunięte']
+                if any(k in alert_summary.lower() for k in ban_keywords) or 'konto zablokowane' in page_source_lower:
+                    reason_m = re.search(r'konto zablokowane[:\s]*([^\n<]+)', page_source, re.IGNORECASE)
+                    reason_text = reason_m.group(0).strip() if reason_m else (alert_summary or "封号违规")
+                    logger.error(f"🚫 {name} 已被封号: {reason_text}")
+                    self.take_screenshot(f"banned_{name}")
+                    return False, f"🚫 账号已被封禁 ({reason_text})", "banned"
+
+                # 2. 账号或密码错误检测
+                wrong_pwd_keywords = ['nieprawidłowe', 'nieprawidłowy', 'incorrect', 'invalid', 'błędne dane', 'złe dane']
+                if any(k in alert_summary.lower() for k in wrong_pwd_keywords):
+                    logger.error(f"❌ {name} 登录失败: 账号或密码错误 ({alert_summary})")
+                    self.take_screenshot(f"wrong_pwd_{name}")
+                    return False, "❌ 账号或密码错误", "wrong_pwd"
+
+                # 3. 登录成功检测
+                # 成功特征：已跳转离开登录页（如进入 /next/, /dashboard, /admin 等），或者页面存在登出链接 /logout/
+                is_on_login_page = current_url.rstrip('/').endswith('/login') or '/login/' in current_url
+                has_logout = '/logout' in page_source_lower or 'wyloguj' in page_source_lower or 'logout' in page_source_lower
+
+                if (not is_on_login_page and any(ind in current_url.lower() for ind in ['next', 'dashboard', 'account', 'overview', 'strona', 'panel'])) or has_logout:
                     logger.info(f"✅ {name} 登录成功! (URL: {current_url})")
                     self.take_screenshot(f"success_{name}")
-                    return True, "登录成功"
+                    return True, "✅ 登录成功 (账号正常)", "success"
 
-                if any(ind in page_source for ind in error_indicators):
-                    logger.error(f"❌ {name} 登录失败: 页面包含错误信息")
-                    self.take_screenshot(f"error_page_{name}")
-                    return False, "页面错误信息"
+                # 4. 仍停留在登录页面且有密码框
+                if self.wait_for_element(By.NAME, "password", timeout=2):
+                    err_msg = alert_summary if alert_summary else "仍停留在登录页面"
+                    logger.error(f"❌ {name} 登录未成功: {err_msg} (URL: {current_url})")
+                    self.take_screenshot(f"failed_{name}")
+                    return False, f"❌ 登录失败 ({err_msg})", "failed"
 
-                logger.info(f"⚠️ {name} 登录状态未知，但在 {url} 已尝试提交，当前 URL: {current_url}")
+                logger.info(f"⚠️ {name} 登录状态未明确，当前 URL: {current_url}")
                 self.take_screenshot(f"unknown_{name}")
-                return True, "页面跳转完成"
+                return True, "⚠️ 页面跳转完成", "unknown"
 
             except Exception as e:
                 logger.error(f"❌ 在尝试 {url} 登录时出现异常: {e}")
@@ -264,7 +294,7 @@ class Serv00LoginBot:
 
         logger.error(f"❌ 所有候选登录页都尝试失败: {panel}")
         self.take_screenshot(f"error_all_candidates_{name}")
-        return False, "无法找到合适的登录页面或登录失败"
+        return False, "无法找到合适的登录页面或登录失败", "failed"
 
     @staticmethod
     def _parse_accounts(raw: str):
@@ -342,11 +372,18 @@ class Serv00LoginBot:
                 short_name = account.get('name') or account.get('username') or account.get('panel') or f'账号{i}'
                 logger.info(f"🔄 处理第 {i}/{len(accounts)} 个账号: {short_name}")
 
-                success, message = self.login_to_serv00(account)
+                res = self.login_to_serv00(account)
+                if len(res) == 3:
+                    success, message, status_type = res
+                else:
+                    success, message = res
+                    status_type = "success" if success else "failed"
+
                 results.append({
                     'name': short_name,
                     'success': success,
                     'message': message,
+                    'status_type': status_type,
                     'panel': account.get('panel', '')
                 })
 
@@ -357,21 +394,29 @@ class Serv00LoginBot:
 
             # 构造 Telegram 消息
             message_lines = []
-            success_count = sum(1 for r in results if r['success'])
+            normal_count = sum(1 for r in results if r.get('status_type') == 'success')
+            banned_count = sum(1 for r in results if r.get('status_type') == 'banned')
+            wrong_pwd_count = sum(1 for r in results if r.get('status_type') == 'wrong_pwd')
+            failed_count = sum(1 for r in results if r.get('status_type') not in ['success', 'banned', 'wrong_pwd'])
+
             for r in results:
                 panel_lower = r['panel'].lower()
-                service_provider = 'CT8' if panel_lower == 'panel.ct8.pl' else 'Serv00'
-                status_icon = "✅" if r['success'] else "❌"
+                service_provider = 'CT8' if 'ct8' in panel_lower else 'Serv00'
                 message_lines.append(
-                    f"🖥️ 服务商: {service_provider}\n👤 用户名: {r['name']}\n⏰ 时间: {format_to_iso(datetime.utcnow() + timedelta(hours=8))}\n{status_icon} 状态: {r['message']}\n"
+                    f"🖥️ 服务商: {service_provider}\n👤 用户名: {r['name']}\n⏰ 时间: {format_to_iso(datetime.utcnow() + timedelta(hours=8))}\n📋 状态: {r['message']}\n"
                 )
-            success_rate = (success_count / len(results)) * 100
+
             message_lines.append(
-                f"📊 统计信息:\n✅ 成功: {success_count}/{len(results)}\n📈 成功率: {success_rate:.1f}%\n🏁 所有账号操作已完成"
+                f"📊 统计报告:\n"
+                f"✅ 正常存活: {normal_count}/{len(results)}\n"
+                f"🚫 封号失效: {banned_count} 个\n"
+                f"❌ 密码错误: {wrong_pwd_count} 个\n"
+                f"⚠️ 其他异常: {failed_count} 个\n"
+                f"🏁 所有账号检测已完成"
             )
             send_telegram_message("\n".join(message_lines))
 
-            return success_count > 0
+            return True
         except Exception as e:
             logger.error(f"❌ 处理过程中出现异常: {e}")
             send_telegram_message(f"❌ Serv00 & CT8 登录任务失败\n\n错误: {e}")
